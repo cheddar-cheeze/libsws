@@ -1,16 +1,6 @@
 #include <curl/curl.h>
-#include <sys/socket.h>
-#include <unistd.h>
 #include <poll.h>
-#include <tls.h>
-
-struct websocket
-{
-	CURL *curl;
-	struct tls *tls;
-	int is_tls;
-	int sockfd;
-};
+#include <unistd.h>
 
 //defined in RFC 6455
 struct base_frame
@@ -31,67 +21,75 @@ struct base_frame
 	 */
 };
 
-static curl_socket_t ws_create(void *sockfd, curlsocktype purpose, struct curl_sockaddr *addr)
-{
-	*sockfd = (int) socket(addr->family, addr->socktype, addr->protocol);
-	return *sockfd;
-}
-
-struct websocket *ws_init(void)
-{
-	struct websocket *rv;
-
-	rv = malloc(sizeof(websocket));
-
-	rv->curl = curl_easy_init();
-	rv->tls = tls_client();
-
-	return rv;
-}
-
-void ws_cleanup(struct websocket *ws)
-{
-	curl_easy_cleanup(ws->curl);
-	tls_free(ws->tls);
-}
-
 /*
  * use http/https for the host scheme rather than ws/wss
  * Example: https://gateway.discord.gg
  */
-ws_connect(const char *host, const char key, unsigned char version)
+static int ws_handshake(CURL *curl, const char *host, const char *key, unsigned char version)
 {
 	//prepares headers for websocket handshake
+	long resp;
+	int rv;
+
+	rv = 0;
+
 	curl_slist_append(NULL, "Upgrade: websocket");
 	curl_slist_append(headers, "Connection: upgrade");
 	curl_slist_append(headers, "Sec-Websocket-Key: ?");
 	curl_slist_append(headers, "Sec-Websocket-Version: 13");
-	curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers)
+	curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+	curl_easy_preform(curl);
+	
+	curl_easy_getinfo(curl, CURLINFO_HTTP_RESPONSECODE, &resp);
+	
+	if(resp != 101)
+		goto err;
+
+	rv = 1;
+
+err:
+	return rv;
 }
 
-void ws_close(struct websocket *ws)
+int ws_connect(CURL *curl, const char *host, const char *key, unsigned char version)
 {
-	if(ws->is_ls == 1)
-		tls_close(ws->tls);
-	
-	close(ws->sockfd);
+	int rv;
+
+	rv = 0;
+
+	if(ws_handshake(curl, host, key, version) != 1)
+		goto err;
+
+	curl_easy_pause(curl, CURLPAUSE_ALL);
+	curl_easy_getinfo(curl, CURLINFO_ACTIVESOCKET &rv);
+
+err:
+	return rv;
+}
+
+CURL *ws_init(void)
+{
+	return curl_easy_init();
+}
+
+void ws_cleanup(CURL *curl)
+{
+	curl_easy_cleanup(curl);
+}
+
+
+
+void ws_close(CURL *curl)
+{
 }
 
 
 ssize_t ws_read(struct websocket *ws, void *buf, size_t buflen)
 {
-	if(ws->is_tls == 1)
-		return tls_read(ws->tls, buf, buflen);
-
-	return read(ws->sockfd, buf, buflen);
 }
 
 ssize_t ws_write(struct websocket *ws, const void *buf, size_t buflen)
 {
-	if(ws->is_tls == 1)
-		return tls_write(ws->tls, buf, buflen);
-
-	return write(ws->sockfd, buf, buflen);
 }
 
 /*
